@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/dnn/dnn.hpp>
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudaarithm.hpp>
 
 int getMaxAreaContourId(std::vector <std::vector<cv::Point>> contours)
 {
@@ -17,6 +19,51 @@ int getMaxAreaContourId(std::vector <std::vector<cv::Point>> contours)
     return maxAreaContourId;
 }
 
+inline void blend(const cv::Mat &bg, const cv::Mat &fg, const cv::Mat &mask, cv::Mat &res)
+{
+static cv::Mat mf,m3,f1,f2;
+
+// normalize mask to 0-1 and convert to 3 channels
+mask.convertTo(mf, CV_32FC1, 1.0 / 255.0);
+cv::cvtColor(mf, m3, cv::COLOR_GRAY2BGR);
+
+bg.convertTo(f1, CV_32FC1, 1.0 / 255.0);
+fg.convertTo(f2, CV_32FC1, 1.0 / 255.0);
+
+// blend with mask
+cv::multiply(f1, cv::Scalar(1.0, 1.0, 1.0)-m3, f1);
+cv::multiply(f2, m3, f2);
+
+cv::add(f1, f2, res);
+}
+
+void blend_cuda(const cv::Mat &bg, const cv::Mat &fg, const cv::Mat &mask, cv::Mat &res)
+{
+cv::cuda::GpuMat g1, g2, gmask, gmask3, gout;
+g1.upload(bg);
+g2.upload(fg);
+gmask.upload(mask);
+
+g1.convertTo(g1, CV_32F, 1.0 / 255.0);
+g2.convertTo(g2, CV_32F, 1.0 / 255.0);
+gmask.convertTo(gmask, CV_32F, 1.0 / 255.0);
+
+cv::cuda::GpuMat channels[3] = { gmask, gmask, gmask };
+cv::cuda::merge(channels, 3, gmask3);
+
+cv::cuda::GpuMat ginvMask(gmask3.size(), gmask3.type());
+cv::cuda::subtract(cv::Scalar::all(1.0), gmask3, ginvMask);
+
+// Multiply
+cv::cuda::GpuMat p1, p2;
+cv::cuda::multiply(g1, ginvMask, p1);
+cv::cuda::multiply(g2, gmask3, p2);
+
+// Add
+cv::cuda::add(p1, p2, gout);
+
+gout.download(res);
+}
 
 int main(int argc, char **argv)
 {
@@ -69,6 +116,7 @@ int main(int argc, char **argv)
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap.set(cv::CAP_PROP_FRAME_WIDTH, fsize.width);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, fsize.height);
+    cap.set(cv::CAP_PROP_FPS, 30);
 
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeDefault);
 
@@ -115,6 +163,9 @@ int main(int argc, char **argv)
     bgimg=cv::imread("bg.jpg", cv::IMREAD_COLOR);
     resize(bgimg, bgimg, fsize);
 
+    const cv::Mat bg_green(fsize, CV_8UC3, cv::Scalar(0,255,0));
+    cv::Mat bg(fsize, CV_8UC3);
+
     uint f=1;
 
     cv::TickMeter tm;
@@ -137,8 +188,6 @@ int main(int argc, char **argv)
         cv::dnn::blobFromImage(frame, blobMat, 1.0/255.0);
 
         src_data.assign(blobMat.begin<float>(), blobMat.end<float>());
-//        for(size_t i = 0; i < src_data.size(); i++)
- //           src_data[i] /= 255;
 
         io_binding.BindInput("src", src_tensor);
         session.Run(Ort::RunOptions{nullptr}, io_binding);
@@ -196,11 +245,10 @@ int main(int argc, char **argv)
 #endif
 
         // Blur original frame
-        cv::Mat f1,f2, b, m3, mf;
-        cv::Mat bg(iframe.size(), CV_8UC3);
+        cv::Mat b;
 
         if (green) {
-            bg=cv::Scalar(0,255,0);
+            bg=bg_green;
         } else if (blurbg) {
             cv::blur(iframe, bg, cv::Size(19,19));
         } else {
@@ -208,20 +256,12 @@ int main(int argc, char **argv)
         }
 
         if (show_green) {
-            // normalize mask to 0-1 and convert to 3 channels
-            m.convertTo(mf, CV_32FC1, 1.0 / 255.0);
-            cv::cvtColor(mf, m3, cv::COLOR_GRAY2BGR);
-
-            bg.convertTo(f1, CV_32FC1, 1.0 / 255.0);
-            iframe.convertTo(f2, CV_32FC1, 1.0 / 255.0);
-
-            // blend with mask
-            cv::multiply(f1, cv::Scalar(1.0, 1.0, 1.0)-m3, f1);
-            cv::multiply(f2, m3, f2);
-
-            cv::add(f1, f2, b);
             //b.convertTo(b, CV_8UC3, 255.0);
-
+	    if (use_CUDA) {
+  	       blend_cuda(bg, iframe, m, b);
+	    } else {
+  	       blend(bg, iframe, m, b);
+	    }
             // cv::copyTo(frame, bg, m);
             cv::imshow("green", b);
         }
