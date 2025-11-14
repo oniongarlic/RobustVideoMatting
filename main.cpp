@@ -5,6 +5,10 @@
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudaarithm.hpp>
 
+#define BG_GREEN 1
+#define BG_BLUR 2
+#define BG_IMG 3
+
 int getMaxAreaContourId(std::vector <std::vector<cv::Point>> contours)
 {
     double maxArea = 0;
@@ -154,11 +158,11 @@ int main(int argc, char **argv)
 
     cv::Mat frame,iframe,bgimg,pmask;
 
+    int bgtype=1;
     int run=1, green=1;
     bool show_img=true;
     bool show_mask=true;
     bool show_green=true;
-    bool blurbg=false;
 
     bgimg=cv::imread("bg.jpg", cv::IMREAD_COLOR);
     resize(bgimg, bgimg, fsize);
@@ -245,15 +249,20 @@ int main(int argc, char **argv)
 #endif
 
         // Blur original frame
-        cv::Mat b;
+        cv::Mat b, bf;
 
-        if (green) {
-            bg=bg_green;
-        } else if (blurbg) {
-            cv::blur(iframe, bg, cv::Size(19,19));
-        } else {
-            bg=bgimg;
-        }
+	switch (bgtype) {
+		case BG_GREEN:
+	            bg=bg_green;
+		break;
+		case BG_BLUR:
+	            cv::blur(iframe, bf, cv::Size(19,19));
+		    bg=bf;
+		break;
+		case BG_IMG:
+	            bg=bgimg;
+		break;
+	}
 
         if (show_green) {
             //b.convertTo(b, CV_8UC3, 255.0);
@@ -300,7 +309,14 @@ int main(int argc, char **argv)
             show_green=!show_green;
             break;
         case 'b':
-            green=!green;
+            bgtype++;
+	    if (bgtype>3) bgtype=1;
+	    printf("Type: %d\n", bgtype);
+            break;
+        case 'n':
+            bgtype--;
+	    if (bgtype<1) bgtype=3;
+	    printf("Type: %d\n", bgtype);
             break;
 	case 'f':
 	    cv::setWindowProperty("mask", cv::WND_PROP_FULLSCREEN , cv::WINDOW_FULLSCREEN );
