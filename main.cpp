@@ -38,7 +38,8 @@ int main(int argc, char **argv)
     }
     int deviceID = 0;
 
-    cv::Size size=sdsize;
+    cv::Size fsize=hdsize; // input and output size
+    cv::Size size=sdsize; // size for rvm
     float dsratio=0.25f;
 
     //creates the onnx runtime environment
@@ -66,8 +67,8 @@ int main(int argc, char **argv)
     }
 
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, size.width);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, size.height);
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, fsize.width);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, fsize.height);
 
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeDefault);
 
@@ -103,7 +104,7 @@ int main(int argc, char **argv)
     cv::namedWindow("img", cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO );
     cv::namedWindow("green", cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO );
 
-    cv::Mat frame,bgimg,pmask;
+    cv::Mat frame,iframe,bgimg,pmask;
 
     int run=1, green=1;
     bool show_img=true;
@@ -112,7 +113,7 @@ int main(int argc, char **argv)
     bool blurbg=false;
 
     bgimg=cv::imread("bg.jpg", cv::IMREAD_COLOR);
-    resize(bgimg, bgimg, size);
+    resize(bgimg, bgimg, fsize);
 
     uint f=1;
 
@@ -122,14 +123,15 @@ int main(int argc, char **argv)
 	tm.start();
 
 	cv::Mat frs;
-        cap.read(frame);
-        if (frame.empty()) {
+        cap.read(iframe);
+        if (iframe.empty()) {
             printf("error : empty frame grabbed");
             break;
         }
 	f++;
 
-        resize(frame, frame, size);
+	// Resize, potentially larger, input frame to smaller size for rvm
+        resize(iframe, frame, size);
 
         cv::Mat blobMat;
         cv::dnn::blobFromImage(frame, blobMat, 1.0/255.0);
@@ -162,8 +164,11 @@ int main(int argc, char **argv)
 
 //        cv::imshow("rawmask", mask);
 
-        cv::Mat img;
+        cv::Mat m(mask.size(), CV_8UC1, cv::Scalar(0));
 
+#if 1
+	m=mask;
+#else
         std::vector<std::vector<cv::Point> > cvs;
         cv::findContours(mask, cvs, cv::RETR_LIST, cv::CHAIN_APPROX_NONE);
 
@@ -180,20 +185,24 @@ int main(int argc, char **argv)
 	}
 #endif
 
+#endif
+	// Resize mask input size
+        resize(m, m, iframe.size());
+
 #if 0
-        cv::Mat bg(frame.size(), CV_8UC3, cv::Scalar(0,255,0));
-        cv::copyTo(frame, bg, m);
+        cv::Mat bg(iframe.size(), CV_8UC3, cv::Scalar(0,255,0));
+        cv::copyTo(iframe, bg, m);
         cv::imshow("green", bg);
 #endif
 
         // Blur original frame
         cv::Mat f1,f2, b, m3, mf;
-        cv::Mat bg(frame.size(), CV_8UC3);
+        cv::Mat bg(iframe.size(), CV_8UC3);
 
         if (green) {
             bg=cv::Scalar(0,255,0);
         } else if (blurbg) {
-            cv::blur(frame, bg, cv::Size(19,19));
+            cv::blur(iframe, bg, cv::Size(19,19));
         } else {
             bg=bgimg;
         }
@@ -204,31 +213,32 @@ int main(int argc, char **argv)
             cv::cvtColor(mf, m3, cv::COLOR_GRAY2BGR);
 
             bg.convertTo(f1, CV_32FC1, 1.0 / 255.0);
-            frame.convertTo(f2, CV_32FC1, 1.0 / 255.0);
+            iframe.convertTo(f2, CV_32FC1, 1.0 / 255.0);
 
             // blend with mask
             cv::multiply(f1, cv::Scalar(1.0, 1.0, 1.0)-m3, f1);
             cv::multiply(f2, m3, f2);
 
             cv::add(f1, f2, b);
-            b.convertTo(b, CV_8UC3, 255.0);
+            //b.convertTo(b, CV_8UC3, 255.0);
 
             // cv::copyTo(frame, bg, m);
             cv::imshow("green", b);
         }
 
         if (show_img) {
-            cv::bitwise_and(frame, frame, img, m);
+	    cv::Mat img;
+            cv::bitwise_and(iframe, iframe, img, m);
             cv::imshow("img", img);
         }
 
-	if (!pmask.empty())
-		cv::addWeighted(m, 0.9, pmask, 0.1, 0.0, m);
+//	if (!pmask.empty())
+//		cv::addWeighted(m, 0.9, pmask, 0.1, 0.0, m);
 
         if (show_mask)
             cv::imshow("mask", m);
 
-	pmask=m.clone();
+//	pmask=m.clone();
 
 	tm.stop();
 	if (f % 32==0) {
